@@ -47,7 +47,7 @@ jobs:
         with:
           tagName: app-v__VERSION__
           releaseName: 'App v__VERSION__'
-          releaseBody: 'Seating chart app release'
+          releaseBody: 'Inventory app release'
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.platform == 'ubuntu-22.04' && '--bundles deb,appimage' || '--bundles nsis,msi' }}
@@ -57,5 +57,5 @@ jobs:
         if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: klassekart-app-portable-windows
-          path: src-tauri/target/release/klassekart-app.exe
+          name: inventory-app-portable-windows
+          path: src-tauri/target/release/inventory-app.exe
