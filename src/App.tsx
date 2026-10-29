@@ -43,7 +43,8 @@ export default function App() {
   const [cameraError, setCameraError] = useState<string | null>(null);
 
   const scanInputRef = useRef<HTMLInputElement>(null);
-  const popupInputRef = useRef<HTMLInputElement | HTMLSelectElement>(null);
+  const popupInputRef = useRef<HTMLInputElement>(null);
+  const popupSelectRef = useRef<HTMLSelectElement>(null);
 
   const loadData = async () => {
     try {
@@ -62,12 +63,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (popupItem || isNewItemPopup || itemToDelete) {
+    if (popupItem) {
       setTimeout(() => {
         popupInputRef.current?.focus();
       }, 50);
+    } else if (isNewItemPopup) {
+      setTimeout(() => {
+        popupSelectRef.current?.focus();
+      }, 50);
     }
-  }, [popupItem, isNewItemPopup, itemToDelete]);
+  }, [popupItem, isNewItemPopup]);
 
   const processScannedId = (scannedText: string) => {
     const trimmedId = scannedText.trim();
@@ -554,7 +559,7 @@ export default function App() {
 
             <form onSubmit={handleRegisterNew} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <select
-                ref={popupInputRef}
+                ref={popupSelectRef}
                 value={newCategory}
                 onChange={(e) => setNewCategory(e.target.value)}
                 style={{ padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", borderRadius: "0px", outline: "none", fontSize: "13px", colorScheme: "dark" }}
