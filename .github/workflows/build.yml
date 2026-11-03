@@ -45,17 +45,39 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: app-v__VERSION__
-          releaseName: 'App v__VERSION__'
+          tagName: inventory-app-v__VERSION__
+          releaseName: 'Inventory App v__VERSION__'
           releaseBody: 'Inventory app release'
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.platform == 'ubuntu-22.04' && '--bundles deb,appimage' || '--bundles nsis,msi' }}
 
-      # Step 2: Upload raw portable binary as a workflow Artifact (Windows only)
-      - name: Upload Portable Executable as Artifact
+      # Step 2: Create zip containing executable + unblock script and upload as Artifact (Windows only)
+      - name: Package Portable Zip with Unblock Script
+        if: matrix.platform == 'windows-latest'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path portable_release -Force
+          
+          # Copy the compiled application binary
+          Copy-Item "src-tauri\target\release\inventory-app.exe" -Destination "portable_release\"
+
+          # Create the unblock.bat file inside the directory
+          $batContent = @"
+          @echo off
+          echo Removing security warnings for files in this folder...
+          powershell -Command "Get-ChildItem -Path '%~dp0' -File | Unblock-File"
+          echo Done!
+          pause
+          "@
+          Set-Content -Path "portable_release\unblock.bat" -Value $batContent -Encoding ASCII
+
+          # Zip the folder contents
+          Compress-Archive -Path "portable_release\*" -DestinationPath "inventory-app-portable-windows.zip"
+
+      - name: Upload Portable Zip Artifact
         if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: inventory-app-portable-windows
-          path: src-tauri/target/release/inventory-app.exe
+          path: inventory-app-portable-windows.zip
