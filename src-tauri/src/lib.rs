@@ -41,7 +41,7 @@ pub fn init_db() -> Result<Connection> {
         [],
     )?;
 
-conn.execute(
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS loans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             item_id TEXT NOT NULL,
@@ -174,6 +174,40 @@ fn checkout_item(
 }
 
 #[tauri::command]
+fn checkout_generic_item(
+    state: State<AppState>,
+    category: String,
+    user_id: String,
+    user_class: String,
+    due_date: Option<String>,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    let unique_id = format!("GEN-{}-{}", category, chrono::Utc::now().timestamp_subsec_millis());
+
+    let class_val = if user_class.is_empty() {
+        None
+    } else {
+        Some(user_class)
+    };
+
+    conn.execute(
+        "INSERT INTO items (id, category, is_rented, current_user, user_class, due_date) VALUES (?1, ?2, 1, ?3, ?4, ?5)",
+        rusqlite::params![unique_id, category, user_id, class_val, due_date],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    conn.execute(
+        "INSERT INTO loans (item_id, user_id, user_class, loan_date, due_date) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![unique_id, user_id, class_val, now, due_date],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
 fn return_item(state: State<AppState>, item_id: String) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
@@ -196,6 +230,7 @@ pub fn run() {
             get_items,
             get_loans,
             checkout_item,
+            checkout_generic_item,
             return_item
         ])
         .run(tauri::generate_context!())

@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Html5Qrcode } from "html5-qrcode";
+import Barcode from "react-barcode";
+import { QRCodeSVG } from "qrcode.react";
 
 interface Item {
   id: string;
@@ -31,12 +33,24 @@ export default function App() {
   const [newIdToRegister, setNewIdToRegister] = useState("");
   const [newCategory, setNewCategory] = useState("PC");
 
+  const [isGenericLoanPopup, setIsGenericLoanPopup] = useState(false);
+  const [genericCategory, setGenericCategory] = useState("Headset");
+  const [genericUser, setGenericUser] = useState("");
+  const [genericClass, setGenericClass] = useState("");
+  const [genericDays, setGenericDays] = useState("");
+  const [genericHours, setGenericHours] = useState("");
+
+  // Utskrifts-state
+  const [isPrintPopupOpen, setIsPrintPopupOpen] = useState(false);
+  const [printType, setPrintType] = useState<"qr" | "barcode">("qr");
+  const [labelSizeCm, setLabelSizeCm] = useState<number>(3.0); 
+  const [generatedBatch, setGeneratedBatch] = useState<string[]>([]);
+
   const [loanUser, setLoanUser] = useState("");
   const [loanClass, setLoanClass] = useState("");
   const [loanDays, setLoanDays] = useState("");
   const [loanHours, setLoanHours] = useState("");
 
-  // State for slette-bekreftelsespopup
   const [itemToDelete, setItemToDelete] = useState<Item | null>(null);
 
   const [cameraActive, setCameraActive] = useState(false);
@@ -112,7 +126,7 @@ export default function App() {
                 .catch(console.error);
             }
           },
-          () => { }
+          () => {}
         )
         .catch((err) => {
           console.error("Kamerafeil:", err);
@@ -148,6 +162,27 @@ export default function App() {
     }
   };
 
+  // Beregning for LIGGENDE (Landscape) A4-ark: 29.7 cm bredde, 21.0 cm høyde
+  const calculateTotalFit = (sizeCm: number, type: "qr" | "barcode") => {
+    const widthCm = type === "barcode" ? sizeCm * 1.5 : sizeCm;
+    const heightCm = sizeCm;
+    const cols = Math.floor(28.5 / widthCm);
+    const rows = Math.floor(20.0 / heightCm);
+    return Math.max(1, cols * rows);
+  };
+
+  const generateUniqueBatch = (sizeCm: number, type: "qr" | "barcode") => {
+    const totalCount = calculateTotalFit(sizeCm, type);
+    const uniqueSet = new Set<string>();
+
+    while (uniqueSet.size < totalCount) {
+      const randomNum = Math.floor(100000 + Math.random() * 900000);
+      uniqueSet.add(randomNum.toString());
+    }
+
+    setGeneratedBatch(Array.from(uniqueSet));
+  };
+
   const confirmDelete = async () => {
     if (!itemToDelete) return;
     try {
@@ -180,7 +215,7 @@ export default function App() {
         itemId: popupItem.id,
         userId: user,
         userClass: userClass,
-        dueDate: dueDateStr
+        dueDate: dueDateStr,
       });
       setPopupItem(null);
       setLoanUser("");
@@ -193,10 +228,43 @@ export default function App() {
     }
   };
 
-  const handlePopupReturn = async () => {
-    if (!popupItem) return;
+  const handleGenericCheckout = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const user = genericUser.trim() || "Anonym / Elev";
+    const userClass = genericClass.trim();
+
+    let dueDateStr: string | null = null;
+    const days = parseInt(genericDays) || 0;
+    const hours = parseInt(genericHours) || 0;
+
+    if (days > 0 || hours > 0) {
+      const dueDate = new Date();
+      dueDate.setDate(dueDate.getDate() + days);
+      dueDate.setHours(dueDate.getHours() + hours);
+      dueDateStr = dueDate.toISOString();
+    }
+
     try {
-      await invoke("return_item", { itemId: popupItem.id });
+      await invoke("checkout_generic_item", {
+        category: genericCategory,
+        userId: user,
+        userClass: userClass,
+        dueDate: dueDateStr,
+      });
+      setIsGenericLoanPopup(false);
+      setGenericUser("");
+      setGenericClass("");
+      setGenericDays("");
+      setGenericHours("");
+      loadData();
+    } catch (err) {
+      alert("Feil ved generisk utlån: " + err);
+    }
+  };
+
+  const handlePopupReturn = async (itemId: string) => {
+    try {
+      await invoke("return_item", { itemId: itemId });
       setPopupItem(null);
       loadData();
     } catch (err) {
@@ -212,7 +280,11 @@ export default function App() {
     const diff = due - now;
 
     const formattedDate = new Date(dueDateStr).toLocaleString([], {
-      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
     });
 
     if (diff < 0) {
@@ -239,7 +311,9 @@ export default function App() {
   const availableItems = totalItems - rentedItems;
 
   const now = new Date().getTime();
-  const overdueItems = items.filter((i) => i.is_rented && i.due_date && new Date(i.due_date).getTime() < now).length;
+  const overdueItems = items.filter(
+    (i) => i.is_rented && i.due_date && new Date(i.due_date).getTime() < now
+  ).length;
 
   const filteredItems = items.filter(
     (i) =>
@@ -259,41 +333,92 @@ export default function App() {
         minHeight: "100vh",
       }}
       onClick={() => {
-        if (!popupItem && !isNewItemPopup && !itemToDelete) {
+        if (!popupItem && !isNewItemPopup && !itemToDelete && !isGenericLoanPopup && !isPrintPopupOpen) {
           scanInputRef.current?.focus();
         }
       }}
     >
+      {/* CSS FOR LIGGENDE UDSKRIFT (LANDSCAPE) */}
+      <style>{`
+        @media print {
+          @page {
+            size: A4 landscape;
+            margin: 0;
+          }
+        }
+      `}</style>
+
       {/* HEADER */}
       <div style={{ marginBottom: "24px", borderBottom: "1px solid #222", paddingBottom: "16px" }}>
-        <h1 style={{ margin: 0, fontSize: "20px", fontWeight: "600", color: "#fff", letterSpacing: "-0.5px" }}>UTLÅNSSYSTEM // ADMIN</h1>
-        <p style={{ margin: "4px 0 0 0", fontSize: "12px", color: "#777" }}>System for inventar, aktive utlån og historikk</p>
+        <h1 style={{ margin: 0, fontSize: "20px", fontWeight: "600", color: "#fff", letterSpacing: "-0.5px" }}>
+          UTLÅNSSYSTEM // ADMIN
+        </h1>
+        <p style={{ margin: "4px 0 0 0", fontSize: "12px", color: "#777" }}>System for inventar, utlån og logg</p>
       </div>
 
-      {/* STATISTIKK-KORT */}
+      {/* STATISTIKK */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px", marginBottom: "24px" }}>
-        <div style={{ background: "#050505", padding: "16px", border: "1px solid #222", borderRadius: "0px" }}>
-          <div style={{ fontSize: "11px", color: "#777", textTransform: "uppercase", letterSpacing: "0.5px" }}>Totalt utstyr</div>
+        <div style={{ background: "#050505", padding: "16px", border: "1px solid #222" }}>
+          <div style={{ fontSize: "11px", color: "#777", textTransform: "uppercase" }}>Totalt</div>
           <div style={{ fontSize: "22px", fontWeight: "600", color: "#fff", marginTop: "4px" }}>{totalItems}</div>
         </div>
-        <div style={{ background: "#050505", padding: "16px", border: "1px solid #222", borderRadius: "0px" }}>
-          <div style={{ fontSize: "11px", color: "#777", textTransform: "uppercase", letterSpacing: "0.5px" }}>Tilgjengelig</div>
+        <div style={{ background: "#050505", padding: "16px", border: "1px solid #222" }}>
+          <div style={{ fontSize: "11px", color: "#777", textTransform: "uppercase" }}>Ledig</div>
           <div style={{ fontSize: "22px", fontWeight: "600", color: "#3fb950", marginTop: "4px" }}>{availableItems}</div>
         </div>
-        <div style={{ background: "#050505", padding: "16px", border: "1px solid #222", borderRadius: "0px" }}>
-          <div style={{ fontSize: "11px", color: "#777", textTransform: "uppercase", letterSpacing: "0.5px" }}>Utlånt nå</div>
+        <div style={{ background: "#050505", padding: "16px", border: "1px solid #222" }}>
+          <div style={{ fontSize: "11px", color: "#777", textTransform: "uppercase" }}>Utlånt</div>
           <div style={{ fontSize: "22px", fontWeight: "600", color: "#58a6ff", marginTop: "4px" }}>{rentedItems}</div>
         </div>
-        <div style={{ background: "#050505", padding: "16px", border: "1px solid #222", borderRadius: "0px" }}>
-          <div style={{ fontSize: "11px", color: "#777", textTransform: "uppercase", letterSpacing: "0.5px" }}>Forsinket</div>
-          <div style={{ fontSize: "22px", fontWeight: "600", color: overdueItems > 0 ? "#f85149" : "#fff", marginTop: "4px" }}>{overdueItems}</div>
+        <div style={{ background: "#050505", padding: "16px", border: "1px solid #222" }}>
+          <div style={{ fontSize: "11px", color: "#777", textTransform: "uppercase" }}>Forsinket</div>
+          <div style={{ fontSize: "22px", fontWeight: "600", color: overdueItems > 0 ? "#f85149" : "#fff", marginTop: "4px" }}>
+            {overdueItems}
+          </div>
         </div>
       </div>
 
-      {/* SKANNEBOKS */}
-      <div style={{ background: "#050505", padding: "20px", border: "1px solid #222", borderRadius: "0px", marginBottom: "30px" }}>
-        <h3 style={{ margin: "0 0 6px 0", fontSize: "14px", fontWeight: "600", color: "#fff" }}>Kvikkskanning</h3>
-        <p style={{ margin: "0 0 14px 0", fontSize: "12px", color: "#777" }}>Skann strekkode / QR med kamera eller skriv inn ID manuelt og trykk Enter:</p>
+      {/* SKANNING OG UTLÅN */}
+      <div style={{ background: "#050505", padding: "20px", border: "1px solid #222", marginBottom: "30px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", flexWrap: "wrap", gap: "10px" }}>
+          <h3 style={{ margin: 0, fontSize: "14px", fontWeight: "600", color: "#fff" }}>Skann / Søk</h3>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button
+              onClick={() => setIsGenericLoanPopup(true)}
+              style={{
+                padding: "6px 12px",
+                background: "#1f1f1f",
+                color: "#fff",
+                border: "1px solid #333",
+                cursor: "pointer",
+                fontSize: "12px",
+                fontWeight: "600",
+                textTransform: "uppercase",
+              }}
+            >
+              + Utlån uten ID
+            </button>
+            <button
+              onClick={() => {
+                setIsPrintPopupOpen(true);
+                generateUniqueBatch(labelSizeCm, printType);
+              }}
+              style={{
+                padding: "6px 12px",
+                background: "#1f1f1f",
+                color: "#fff",
+                border: "1px solid #333",
+                cursor: "pointer",
+                fontSize: "12px",
+                fontWeight: "600",
+                textTransform: "uppercase",
+              }}
+            >
+              + Skriv ut ID-ark
+            </button>
+          </div>
+        </div>
+        <p style={{ margin: "0 0 14px 0", fontSize: "12px", color: "#777" }}>Skann strekkode / QR eller skriv ID:</p>
 
         <div style={{ display: "flex", gap: "10px", marginBottom: "12px", alignItems: "center" }}>
           <button
@@ -306,11 +431,10 @@ export default function App() {
               background: cameraActive ? "#ff5555" : "#111",
               color: "#fff",
               border: "1px solid #333",
-              borderRadius: "0px",
               cursor: "pointer",
               fontSize: "12px",
               fontWeight: "600",
-              textTransform: "uppercase"
+              textTransform: "uppercase",
             }}
           >
             {cameraActive ? "Lukk Kamera" : "Start Kamera"}
@@ -318,17 +442,17 @@ export default function App() {
         </div>
 
         {cameraError && (
-          <div style={{ marginBottom: "12px", padding: "10px 14px", background: "#1a0505", border: "1px solid #551111", borderRadius: "0px", color: "#ff7b72", fontSize: "12px" }}>
+          <div style={{ marginBottom: "12px", padding: "10px 14px", background: "#1a0505", border: "1px solid #551111", color: "#ff7b72", fontSize: "12px" }}>
             {cameraError}
           </div>
         )}
 
-        <div id="reader" style={{ width: "100%", maxWidth: "360px", display: cameraActive ? "block" : "none", marginBottom: "16px", borderRadius: "0px", overflow: "hidden", border: "1px solid #333" }}></div>
+        <div id="reader" style={{ width: "100%", maxWidth: "360px", display: cameraActive ? "block" : "none", marginBottom: "16px", border: "1px solid #333" }}></div>
 
         <form onSubmit={handleScanSubmit} style={{ display: "flex", gap: "10px" }}>
           <input
             ref={scanInputRef}
-            placeholder="Skann eller skriv inn ID..."
+            placeholder="Skann/skriv ID..."
             value={scanInput}
             onChange={(e) => setScanInput(e.target.value)}
             style={{
@@ -338,37 +462,36 @@ export default function App() {
               background: "#000",
               color: "#fff",
               border: "1px solid #333",
-              borderRadius: "0px",
               outline: "none",
             }}
           />
-          <button type="submit" style={{ padding: "8px 16px", background: "#111", color: "#fff", border: "1px solid #333", borderRadius: "0px", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}>
+          <button type="submit" style={{ padding: "8px 16px", background: "#111", color: "#fff", border: "1px solid #333", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}>
             Søk
           </button>
         </form>
       </div>
 
-      {/* INVENTARLISTE SEKSJON */}
+      {/* INVENTARLISTE */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-        <h3 style={{ margin: 0, fontSize: "14px", fontWeight: "600", color: "#fff" }}>Inventarliste</h3>
+        <h3 style={{ margin: 0, fontSize: "14px", fontWeight: "600", color: "#fff" }}>Inventar</h3>
         <input
-          placeholder="Filtrer enheter..."
+          placeholder="Filtrer..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ padding: "6px 12px", width: "220px", background: "#050505", color: "#fff", border: "1px solid #222", borderRadius: "0px", outline: "none", fontSize: "13px" }}
+          style={{ padding: "6px 12px", width: "180px", background: "#050505", color: "#fff", border: "1px solid #222", outline: "none", fontSize: "13px" }}
         />
       </div>
 
-      <div style={{ border: "1px solid #222", borderRadius: "0px", overflow: "hidden", background: "#050505", marginBottom: "40px" }}>
+      <div style={{ border: "1px solid #222", background: "#050505", marginBottom: "40px" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "13px" }}>
           <thead>
-            <tr style={{ background: "#0a0a0a", borderBottom: "1px solid #222", color: "#777", textTransform: "uppercase", fontSize: "11px", letterSpacing: "0.5px" }}>
-              <th style={{ padding: "10px 16px", fontWeight: "600" }}>ID / Strekkode</th>
+            <tr style={{ background: "#0a0a0a", borderBottom: "1px solid #222", color: "#777", textTransform: "uppercase", fontSize: "11px" }}>
+              <th style={{ padding: "10px 16px", fontWeight: "600" }}>ID</th>
               <th style={{ padding: "10px 16px", fontWeight: "600" }}>Kategori</th>
               <th style={{ padding: "10px 16px", fontWeight: "600" }}>Status</th>
-              <th style={{ padding: "10px 16px", fontWeight: "600" }}>Utlånt til (Klasse)</th>
-              <th style={{ padding: "10px 16px", fontWeight: "600" }}>Frist & Tid igjen</th>
-              <th style={{ padding: "10px 16px", fontWeight: "600", textAlign: "right" }}>Handling</th>
+              <th style={{ padding: "10px 16px", fontWeight: "600" }}>Lånt til</th>
+              <th style={{ padding: "10px 16px", fontWeight: "600" }}>Frist</th>
+              <th style={{ padding: "10px 16px", fontWeight: "600", textAlign: "right" }}>Valg</th>
             </tr>
           </thead>
           <tbody>
@@ -379,7 +502,7 @@ export default function App() {
                   <td style={{ padding: "10px 16px", fontFamily: "monospace", color: "#fff" }}>{item.id}</td>
                   <td style={{ padding: "10px 16px", color: "#aaa" }}>{item.category}</td>
                   <td style={{ padding: "10px 16px", color: item.is_rented ? (isOverdue ? "#f85149" : "#58a6ff") : "#3fb950", fontWeight: "600", fontSize: "11px", textTransform: "uppercase" }}>
-                    {item.is_rented ? (isOverdue ? "Forsinket" : "Utlånt") : "Tilgjengelig"}
+                    {item.is_rented ? (isOverdue ? "Forsinket" : "Utlånt") : "Ledig"}
                   </td>
                   <td style={{ padding: "10px 16px", color: "#ccc" }}>
                     {item.current_user ? `${item.current_user} ${item.user_class ? `(${item.user_class})` : ""}` : "—"}
@@ -387,10 +510,26 @@ export default function App() {
                   <td style={{ padding: "10px 16px", color: isOverdue ? "#f85149" : "#777" }}>
                     {item.is_rented ? formatTimeLeft(item.due_date) : "—"}
                   </td>
-                  <td style={{ padding: "10px 16px", textAlign: "right" }}>
+                  <td style={{ padding: "10px 16px", textAlign: "right", display: "flex", gap: "8px", justifyContent: "flex-end", alignItems: "center" }}>
+                    {item.is_rented && (
+                      <button
+                        onClick={() => handlePopupReturn(item.id)}
+                        style={{
+                          padding: "4px 8px",
+                          background: "#1f2428",
+                          color: "#58a6ff",
+                          border: "1px solid #333",
+                          cursor: "pointer",
+                          fontSize: "11px",
+                          fontWeight: "600",
+                        }}
+                      >
+                        Lever
+                      </button>
+                    )}
                     <button
                       onClick={() => setItemToDelete(item)}
-                      title="Slett enhet"
+                      title="Slett"
                       style={{
                         background: "transparent",
                         border: "none",
@@ -411,7 +550,7 @@ export default function App() {
             {filteredItems.length === 0 && (
               <tr>
                 <td colSpan={6} style={{ padding: "30px", textAlign: "center", color: "#555" }}>
-                  Ingen enheter funnet.
+                  Ingen treff.
                 </td>
               </tr>
             )}
@@ -419,15 +558,15 @@ export default function App() {
         </table>
       </div>
 
-      {/* UTLÅNSHISTORIKK SEKSJON */}
-      <h3 style={{ margin: "0 0 12px 0", fontSize: "14px", fontWeight: "600", color: "#fff" }}>Utlånshistorikk (Logg)</h3>
-      <div style={{ border: "1px solid #222", borderRadius: "0px", overflow: "hidden", background: "#050505" }}>
+      {/* UTLÅNSHISTORIKK */}
+      <h3 style={{ margin: "0 0 12px 0", fontSize: "14px", fontWeight: "600", color: "#fff" }}>Historikk</h3>
+      <div style={{ border: "1px solid #222", background: "#050505" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "13px" }}>
           <thead>
-            <tr style={{ background: "#0a0a0a", borderBottom: "1px solid #222", color: "#777", textTransform: "uppercase", fontSize: "11px", letterSpacing: "0.5px" }}>
+            <tr style={{ background: "#0a0a0a", borderBottom: "1px solid #222", color: "#777", textTransform: "uppercase", fontSize: "11px" }}>
               <th style={{ padding: "10px 16px", fontWeight: "600" }}>ID</th>
               <th style={{ padding: "10px 16px", fontWeight: "600" }}>Låntaker</th>
-              <th style={{ padding: "10px 16px", fontWeight: "600" }}>Utlånt dato</th>
+              <th style={{ padding: "10px 16px", fontWeight: "600" }}>Utlånt</th>
               <th style={{ padding: "10px 16px", fontWeight: "600" }}>Frist</th>
             </tr>
           </thead>
@@ -439,13 +578,23 @@ export default function App() {
                   {loan.user_id} {loan.user_class ? `(${loan.user_class})` : ""}
                 </td>
                 <td style={{ padding: "10px 16px", color: "#777" }}>{loan.loan_date}</td>
-                <td style={{ padding: "10px 16px", color: "#777" }}>{loan.due_date ? new Date(loan.due_date).toLocaleString([], { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : "Ingen frist"}</td>
+                <td style={{ padding: "10px 16px", color: "#777" }}>
+                  {loan.due_date
+                    ? new Date(loan.due_date).toLocaleString([], {
+                        year: "numeric",
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })
+                    : "Ingen frist"}
+                </td>
               </tr>
             ))}
             {loans.length === 0 && (
               <tr>
                 <td colSpan={4} style={{ padding: "30px", textAlign: "center", color: "#555" }}>
-                  Ingen utlånshistorikk registrert ennå.
+                  Ingen historikk.
                 </td>
               </tr>
             )}
@@ -453,25 +602,25 @@ export default function App() {
         </table>
       </div>
 
-      {/* POPUP: BEKREFT SLETTING */}
+      {/* POPUP: SLETTING */}
       {itemToDelete && (
         <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.85)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 100 }}>
-          <div style={{ background: "#050505", padding: "24px", border: "1px solid #333", width: "360px", borderRadius: "0px" }}>
+          <div style={{ background: "#050505", padding: "24px", border: "1px solid #333", width: "360px" }}>
             <h3 style={{ margin: "0 0 10px 0", fontSize: "14px", fontWeight: "600", color: "#f85149", textTransform: "uppercase" }}>Bekreft sletting</h3>
             <p style={{ margin: "0 0 20px 0", fontSize: "13px", color: "#aaa" }}>
-              Er du sikker på at du vil slette enhet <strong style={{ color: "#fff" }}>{itemToDelete.id}</strong> ({itemToDelete.category}) permanent?
+              Slette <strong style={{ color: "#fff" }}>{itemToDelete.id}</strong> ({itemToDelete.category})?
             </p>
 
             <div style={{ display: "flex", gap: "10px" }}>
               <button
                 onClick={confirmDelete}
-                style={{ flex: 1, padding: "9px", background: "#f85149", color: "#fff", border: "none", borderRadius: "0px", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}
+                style={{ flex: 1, padding: "9px", background: "#f85149", color: "#fff", border: "none", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}
               >
                 Slett
               </button>
               <button
                 onClick={() => setItemToDelete(null)}
-                style={{ flex: 1, padding: "9px", background: "transparent", color: "#777", border: "1px solid #333", borderRadius: "0px", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}
+                style={{ flex: 1, padding: "9px", background: "transparent", color: "#777", border: "1px solid #333", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}
               >
                 Avbryt
               </button>
@@ -480,101 +629,298 @@ export default function App() {
         </div>
       )}
 
-      {/* POPUP: EKSISTERENDE UTSTYR */}
-      {popupItem && (
+      {/* POPUP: UTLÅN UTEN ID */}
+      {isGenericLoanPopup && (
         <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.85)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 100 }}>
-          <div style={{ background: "#050505", padding: "24px", border: "1px solid #333", width: "380px", borderRadius: "0px" }}>
-            <h3 style={{ margin: "0 0 16px 0", fontSize: "14px", fontWeight: "600", color: "#fff", textTransform: "uppercase" }}>Utstyr Funnet</h3>
+          <div style={{ background: "#050505", padding: "24px", border: "1px solid #333", width: "380px" }}>
+            <h3 style={{ margin: "0 0 16px 0", fontSize: "14px", fontWeight: "600", color: "#fff", textTransform: "uppercase" }}>Utlån uten ID</h3>
+            <form onSubmit={handleGenericCheckout} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div>
+                <label style={{ display: "block", marginBottom: "4px", fontSize: "11px", textTransform: "uppercase", color: "#777" }}>Type:</label>
+                <select
+                  value={genericCategory}
+                  onChange={(e) => setGenericCategory(e.target.value)}
+                  style={{ width: "100%", padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px", colorScheme: "dark" }}
+                >
+                  <option value="Headset">Headset</option>
+                  <option value="Lader">Lader</option>
+                  <option value="PC">PC</option>
+                  <option value="Kamera">Kamera</option>
+                </select>
+              </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13px", marginBottom: "20px", color: "#888" }}>
-              <div>ID: <strong style={{ color: "#fff" }}>{popupItem.id}</strong></div>
-              <div>Kategori: <strong style={{ color: "#fff" }}>{popupItem.category}</strong></div>
-              <div>Status: <strong style={{ color: popupItem.is_rented ? "#58a6ff" : "#3fb950" }}>{popupItem.is_rented ? `Utlånt til ${popupItem.current_user}` : "Tilgjengelig"}</strong></div>
-            </div>
-
-            {!popupItem.is_rented ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "12px" }}>
+              <div>
+                <label style={{ display: "block", marginBottom: "4px", fontSize: "11px", textTransform: "uppercase", color: "#777" }}>Låntaker:</label>
                 <input
-                  ref={popupInputRef}
-                  placeholder="Navn på elev / låntaker..."
-                  value={loanUser}
-                  onChange={(e) => setLoanUser(e.target.value)}
-                  style={{ padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", borderRadius: "0px", outline: "none", fontSize: "13px" }}
+                  required
+                  placeholder="Navn..."
+                  value={genericUser}
+                  onChange={(e) => setGenericUser(e.target.value)}
+                  style={{ width: "100%", padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px" }}
                 />
-                <input
-                  placeholder="Klasse / Gruppe (f.eks. 2STA)..."
-                  value={loanClass}
-                  onChange={(e) => setLoanClass(e.target.value)}
-                  style={{ padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", borderRadius: "0px", outline: "none", fontSize: "13px" }}
-                />
+              </div>
 
-                <div style={{ display: "flex", gap: "8px", fontSize: "13px", color: "#777" }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ display: "block", marginBottom: "4px", fontSize: "11px", textTransform: "uppercase" }}>Dager til frist:</label>
-                    <input
-                      type="number"
-                      placeholder="0"
-                      value={loanDays}
-                      onChange={(e) => setLoanDays(e.target.value)}
-                      style={{ width: "100%", padding: "8px", background: "#000", color: "#fff", border: "1px solid #333", borderRadius: "0px", outline: "none", fontSize: "13px" }}
-                    />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ display: "block", marginBottom: "4px", fontSize: "11px", textTransform: "uppercase" }}>Timer til frist:</label>
-                    <input
-                      type="number"
-                      placeholder="0"
-                      value={loanHours}
-                      onChange={(e) => setLoanHours(e.target.value)}
-                      style={{ width: "100%", padding: "8px", background: "#000", color: "#fff", border: "1px solid #333", borderRadius: "0px", outline: "none", fontSize: "13px" }}
-                    />
-                  </div>
+              <div>
+                <label style={{ display: "block", marginBottom: "4px", fontSize: "11px", textTransform: "uppercase", color: "#777" }}>Klasse:</label>
+                <input
+                  placeholder="Klasse..."
+                  value={genericClass}
+                  onChange={(e) => setGenericClass(e.target.value)}
+                  style={{ width: "100%", padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px" }}
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: "8px", fontSize: "13px", color: "#777" }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: "block", marginBottom: "4px", fontSize: "11px", textTransform: "uppercase" }}>Dager:</label>
+                  <input
+                    type="number"
+                    placeholder="0"
+                    value={genericDays}
+                    onChange={(e) => setGenericDays(e.target.value)}
+                    style={{ width: "100%", padding: "8px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px" }}
+                  />
                 </div>
-
-                <button onClick={handlePopupCheckout} style={{ padding: "9px", background: "#111", color: "#fff", border: "1px solid #333", borderRadius: "0px", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase", marginTop: "4px" }}>
-                  Bekreft Utlån
-                </button>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: "block", marginBottom: "4px", fontSize: "11px", textTransform: "uppercase" }}>Timer:</label>
+                  <input
+                    type="number"
+                    placeholder="0"
+                    value={genericHours}
+                    onChange={(e) => setGenericHours(e.target.value)}
+                    style={{ width: "100%", padding: "8px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px" }}
+                  />
+                </div>
               </div>
-            ) : (
-              <div style={{ marginBottom: "12px" }}>
-                <button onClick={handlePopupReturn} style={{ padding: "9px", background: "#111", color: "#fff", border: "1px solid #333", borderRadius: "0px", fontWeight: "600", cursor: "pointer", width: "100%", fontSize: "12px", textTransform: "uppercase" }}>
-                  Lever Tilbake
-                </button>
-              </div>
-            )}
 
-            <button onClick={() => setPopupItem(null)} style={{ padding: "7px", background: "transparent", color: "#777", border: "1px solid #333", borderRadius: "0px", cursor: "pointer", width: "100%", fontSize: "12px", textTransform: "uppercase" }}>
+              <button type="submit" style={{ padding: "9px", background: "#111", color: "#fff", border: "1px solid #333", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase", marginTop: "6px" }}>
+                Registrer
+              </button>
+            </form>
+
+            <button onClick={() => setIsGenericLoanPopup(false)} style={{ marginTop: "10px", padding: "7px", background: "transparent", color: "#777", border: "1px solid #333", cursor: "pointer", width: "100%", fontSize: "12px", textTransform: "uppercase" }}>
               Avbryt
             </button>
           </div>
         </div>
       )}
 
-      {/* POPUP: NY REGISTRERING */}
+      {/* POPUP: FULLSKJERM UTSKRIFT (LIGGENDE / HORISONTALT A4-ARK) */}
+      {isPrintPopupOpen && (
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.92)", display: "flex", flexDirection: "column", zIndex: 100, boxSizing: "border-box", overflow: "hidden" }}>
+          
+          {/* TOPP-KONTROLLER */}
+          <div style={{ padding: "16px 24px", background: "#050505", borderBottom: "1px solid #222", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
+              <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "600", color: "#fff", textTransform: "uppercase" }}>Utskriftsvisning // Liggende A4-ark</h3>
+              
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "11px", color: "#777", textTransform: "uppercase" }}>Format:</span>
+                <select
+                  value={printType}
+                  onChange={(e) => {
+                    const newType = e.target.value as "qr" | "barcode";
+                    setPrintType(newType);
+                    generateUniqueBatch(labelSizeCm, newType);
+                  }}
+                  style={{ padding: "4px 8px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "12px", colorScheme: "dark" }}
+                >
+                  <option value="qr">QR-kode (Kvadrat)</option>
+                  <option value="barcode">Strekkode (Rektangel)</option>
+                </select>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "11px", color: "#777", textTransform: "uppercase" }}>Størrelse ({labelSizeCm} cm):</span>
+                <input
+                  type="range"
+                  min="1.5"
+                  max="6"
+                  step="0.5"
+                  value={labelSizeCm}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setLabelSizeCm(val);
+                    generateUniqueBatch(val, printType);
+                  }}
+                  style={{ width: "120px", accentColor: "#58a6ff", cursor: "pointer" }}
+                />
+                <span style={{ fontSize: "12px", color: "#58a6ff", fontWeight: "600" }}>{calculateTotalFit(labelSizeCm, printType)} stk</span>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button
+                onClick={() => window.print()}
+                style={{ padding: "8px 16px", background: "#238636", color: "#fff", border: "none", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}
+              >
+                Skriv ut
+              </button>
+              <button
+                onClick={() => setIsPrintPopupOpen(false)}
+                style={{ padding: "8px 16px", background: "transparent", color: "#aaa", border: "1px solid #333", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}
+              >
+                Lukk
+              </button>
+            </div>
+          </div>
+
+          {/* HOVEDOMRÅDE: LIGGENDE (LANDSCAPE) A4-ARK VISUALISERING */}
+          <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", padding: "15px", overflow: "hidden" }}>
+            <div 
+              style={{
+                width: "297mm",
+                height: "210mm",
+                maxHeight: "calc(100vh - 90px)",
+                maxWidth: "calc(100vw - 30px)",
+                background: "#ffffff",
+                color: "#000000",
+                boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+                padding: "5mm",
+                boxSizing: "border-box",
+                display: "flex",
+                flexWrap: "wrap",
+                alignContent: "flex-start",
+                gap: "1.5mm",
+                overflow: "hidden"
+              }}
+            >
+              {generatedBatch.map((id) => {
+                const itemWidth = printType === "barcode" ? `${labelSizeCm * 1.5}cm` : `${labelSizeCm}cm`;
+                const itemHeight = `${labelSizeCm}cm`;
+
+                return (
+                  <div 
+                    key={id} 
+                    style={{ 
+                      width: itemWidth,
+                      height: itemHeight,
+                      background: "#ffffff", 
+                      border: "1px dashed #ccc", 
+                      padding: "1mm", 
+                      boxSizing: "border-box",
+                      display: "flex", 
+                      flexDirection: "column", 
+                      justifyContent: "center",
+                      alignItems: "center",
+                      overflow: "hidden"
+                    }}
+                  >
+                    {printType === "barcode" ? (
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
+                        <Barcode value={id} width={Math.max(0.8, labelSizeCm * 0.4)} height={Math.min(50, labelSizeCm * 12)} fontSize={0} displayValue={false} />
+                      </div>
+                    ) : (
+                      <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }}>
+                        <QRCodeSVG value={id} style={{ width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%" }} level="M" />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+        </div>
+      )}
+
+      {/* POPUP: ENHET */}
+      {popupItem && (
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.85)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 100 }}>
+          <div style={{ background: "#050505", padding: "24px", border: "1px solid #333", width: "380px" }}>
+            <h3 style={{ margin: "0 0 16px 0", fontSize: "14px", fontWeight: "600", color: "#fff", textTransform: "uppercase" }}>Enhet Funnet</h3>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13px", marginBottom: "20px", color: "#888" }}>
+              <div>ID: <strong style={{ color: "#fff" }}>{popupItem.id}</strong></div>
+              <div>Kategori: <strong style={{ color: "#fff" }}>{popupItem.category}</strong></div>
+              <div>Status: <strong style={{ color: popupItem.is_rented ? "#58a6ff" : "#3fb950" }}>{popupItem.is_rented ? `Utlånt til ${popupItem.current_user}` : "Ledig"}</strong></div>
+            </div>
+
+            {!popupItem.is_rented ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "12px" }}>
+                <input
+                  ref={popupInputRef}
+                  placeholder="Låntaker..."
+                  value={loanUser}
+                  onChange={(e) => setLoanUser(e.target.value)}
+                  style={{ padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px" }}
+                />
+                <input
+                  placeholder="Klasse..."
+                  value={loanClass}
+                  onChange={(e) => setLoanClass(e.target.value)}
+                  style={{ padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px" }}
+                />
+
+                <div style={{ display: "flex", gap: "8px", fontSize: "13px", color: "#777" }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: "block", marginBottom: "4px", fontSize: "11px", textTransform: "uppercase" }}>Dager:</label>
+                    <input
+                      type="number"
+                      placeholder="0"
+                      value={loanDays}
+                      onChange={(e) => setLoanDays(e.target.value)}
+                      style={{ width: "100%", padding: "8px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px" }}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: "block", marginBottom: "4px", fontSize: "11px", textTransform: "uppercase" }}>Timer:</label>
+                    <input
+                      type="number"
+                      placeholder="0"
+                      value={loanHours}
+                      onChange={(e) => setLoanHours(e.target.value)}
+                      style={{ width: "100%", padding: "8px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px" }}
+                    />
+                  </div>
+                </div>
+
+                <button onClick={handlePopupCheckout} style={{ padding: "9px", background: "#111", color: "#fff", border: "1px solid #333", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase", marginTop: "4px" }}>
+                  Bekreft Utlån
+                </button>
+              </div>
+            ) : (
+              <div style={{ marginBottom: "12px" }}>
+                <button onClick={() => handlePopupReturn(popupItem.id)} style={{ padding: "9px", background: "#111", color: "#fff", border: "1px solid #333", fontWeight: "600", cursor: "pointer", width: "100%", fontSize: "12px", textTransform: "uppercase" }}>
+                  Lever Tilbake
+                </button>
+              </div>
+            )}
+
+            <button onClick={() => setPopupItem(null)} style={{ padding: "7px", background: "transparent", color: "#777", border: "1px solid #333", cursor: "pointer", width: "100%", fontSize: "12px", textTransform: "uppercase" }}>
+              Avbryt
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* POPUP: NY ID */}
       {isNewItemPopup && (
         <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.85)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 100 }}>
-          <div style={{ background: "#050505", padding: "24px", border: "1px solid #333", width: "360px", borderRadius: "0px" }}>
+          <div style={{ background: "#050505", padding: "24px", border: "1px solid #333", width: "360px" }}>
             <h3 style={{ margin: "0 0 6px 0", fontSize: "14px", fontWeight: "600", color: "#fff", textTransform: "uppercase" }}>Ny ID Oppdaget</h3>
-            <p style={{ margin: "0 0 16px 0", fontSize: "12px", color: "#777" }}>ID <strong style={{ color: "#fff" }}>{newIdToRegister}</strong> finnes ikke. Velg kategori:</p>
+            <p style={{ margin: "0 0 16px 0", fontSize: "12px", color: "#777" }}>
+              ID <strong style={{ color: "#fff" }}>{newIdToRegister}</strong> finnes ikke. Velg type:
+            </p>
 
             <form onSubmit={handleRegisterNew} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <select
                 ref={popupSelectRef}
                 value={newCategory}
                 onChange={(e) => setNewCategory(e.target.value)}
-                style={{ padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", borderRadius: "0px", outline: "none", fontSize: "13px", colorScheme: "dark" }}
+                style={{ padding: "8px 12px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "13px", colorScheme: "dark" }}
               >
                 <option value="PC">PC</option>
                 <option value="Lader">Lader</option>
                 <option value="Kamera">Kamera</option>
-                <option value="Hodetelefoner">Hodetelefoner</option>
+                <option value="Headset">Headset</option>
               </select>
-              <button type="submit" style={{ padding: "9px", background: "#111", color: "#fff", border: "1px solid #333", borderRadius: "0px", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}>
-                Lagre i Database
+              <button type="submit" style={{ padding: "9px", background: "#111", color: "#fff", border: "1px solid #333", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}>
+                Lagre
               </button>
             </form>
 
-            <button onClick={() => setIsNewItemPopup(false)} style={{ marginTop: "10px", padding: "7px", background: "transparent", color: "#777", border: "1px solid #333", borderRadius: "0px", cursor: "pointer", width: "100%", fontSize: "12px", textTransform: "uppercase" }}>
+            <button onClick={() => setIsNewItemPopup(false)} style={{ marginTop: "10px", padding: "7px", background: "transparent", color: "#777", border: "1px solid #333", cursor: "pointer", width: "100%", fontSize: "12px", textTransform: "uppercase" }}>
               Avbryt
             </button>
           </div>
