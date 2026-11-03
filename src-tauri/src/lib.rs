@@ -41,7 +41,7 @@ pub fn init_db() -> Result<Connection> {
         [],
     )?;
 
-    conn.execute(
+conn.execute(
         "CREATE TABLE IF NOT EXISTS loans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             item_id TEXT NOT NULL,
@@ -49,7 +49,7 @@ pub fn init_db() -> Result<Connection> {
             user_class TEXT,
             loan_date TEXT NOT NULL,
             due_date TEXT,
-            FOREIGN KEY(item_id) REFERENCES items(id)
+            FOREIGN KEY(item_id) REFERENCES items(id) ON DELETE CASCADE
         )",
         [],
     )?;
