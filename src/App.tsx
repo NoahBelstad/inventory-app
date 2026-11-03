@@ -42,9 +42,11 @@ export default function App() {
 
   // Utskrifts-state
   const [isPrintPopupOpen, setIsPrintPopupOpen] = useState(false);
+  const [showPrintReminder, setShowPrintReminder] = useState(false);
   const [printType, setPrintType] = useState<"qr" | "barcode">("qr");
   const [labelSizeCm, setLabelSizeCm] = useState<number>(3.0); 
-  const [generatedBatch, setGeneratedBatch] = useState<string[]>([]);
+  const [pageCount, setPageCount] = useState<number>(1);
+  const [generatedPagesBatch, setGeneratedPagesBatch] = useState<string[][]>([]);
 
   const [loanUser, setLoanUser] = useState("");
   const [loanClass, setLoanClass] = useState("");
@@ -162,7 +164,6 @@ export default function App() {
     }
   };
 
-  // Beregning for LIGGENDE (Landscape) A4-ark: 29.7 cm bredde, 21.0 cm høyde
   const calculateTotalFit = (sizeCm: number, type: "qr" | "barcode") => {
     const widthCm = type === "barcode" ? sizeCm * 1.5 : sizeCm;
     const heightCm = sizeCm;
@@ -171,16 +172,25 @@ export default function App() {
     return Math.max(1, cols * rows);
   };
 
-  const generateUniqueBatch = (sizeCm: number, type: "qr" | "barcode") => {
-    const totalCount = calculateTotalFit(sizeCm, type);
-    const uniqueSet = new Set<string>();
+  // Korrigert funksjon for å generere helt unike koder for hver enkelt side
+  const generateMultiPageBatch = (sizeCm: number, type: "qr" | "barcode", pages: number) => {
+    const countPerPage = calculateTotalFit(sizeCm, type);
+    const allPages: string[][] = [];
+    const globalUniqueSet = new Set<string>();
 
-    while (uniqueSet.size < totalCount) {
-      const randomNum = Math.floor(100000 + Math.random() * 900000);
-      uniqueSet.add(randomNum.toString());
+    for (let p = 0; p < pages; p++) {
+      const pageBatch: string[] = [];
+      while (pageBatch.length < countPerPage) {
+        const randomNum = Math.floor(100000 + Math.random() * 900000).toString();
+        if (!globalUniqueSet.has(randomNum)) {
+          globalUniqueSet.add(randomNum);
+          pageBatch.push(randomNum);
+        }
+      }
+      allPages.push(pageBatch);
     }
 
-    setGeneratedBatch(Array.from(uniqueSet));
+    setGeneratedPagesBatch(allPages);
   };
 
   const confirmDelete = async () => {
@@ -333,17 +343,39 @@ export default function App() {
         minHeight: "100vh",
       }}
       onClick={() => {
-        if (!popupItem && !isNewItemPopup && !itemToDelete && !isGenericLoanPopup && !isPrintPopupOpen) {
+        if (!popupItem && !isNewItemPopup && !itemToDelete && !isGenericLoanPopup && !isPrintPopupOpen && !showPrintReminder) {
           scanInputRef.current?.focus();
         }
       }}
     >
-      {/* CSS FOR LIGGENDE UDSKRIFT (LANDSCAPE) */}
       <style>{`
         @media print {
           @page {
             size: A4 landscape;
             margin: 0;
+          }
+          body * {
+            visibility: hidden;
+          }
+          #printable-container, #printable-container * {
+            visibility: visible;
+          }
+          #printable-container {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100% !important;
+            background: #ffffff !important;
+          }
+          .printable-page {
+            width: 297mm !important;
+            height: 210mm !important;
+            box-shadow: none !important;
+            margin: 0 !important;
+            padding: 5mm !important;
+            page-break-after: always;
+            break-after: page;
+            background: #ffffff !important;
           }
         }
       `}</style>
@@ -401,7 +433,7 @@ export default function App() {
             <button
               onClick={() => {
                 setIsPrintPopupOpen(true);
-                generateUniqueBatch(labelSizeCm, printType);
+                generateMultiPageBatch(labelSizeCm, printType, pageCount);
               }}
               style={{
                 padding: "6px 12px",
@@ -705,14 +737,14 @@ export default function App() {
         </div>
       )}
 
-      {/* POPUP: FULLSKJERM UTSKRIFT (LIGGENDE / HORISONTALT A4-ARK) */}
+      {/* POPUP: FULLSKJERM UTSKRIFT */}
       {isPrintPopupOpen && (
         <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.92)", display: "flex", flexDirection: "column", zIndex: 100, boxSizing: "border-box", overflow: "hidden" }}>
           
           {/* TOPP-KONTROLLER */}
           <div style={{ padding: "16px 24px", background: "#050505", borderBottom: "1px solid #222", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
-              <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "600", color: "#fff", textTransform: "uppercase" }}>Utskriftsvisning // Liggende A4-ark</h3>
+            <div style={{ display: "flex", alignItems: "center", gap: "20px", flexWrap: "wrap" }}>
+              <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "600", color: "#fff", textTransform: "uppercase" }}>Utskriftsvisning // Flere Ark</h3>
               
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <span style={{ fontSize: "11px", color: "#777", textTransform: "uppercase" }}>Format:</span>
@@ -721,7 +753,7 @@ export default function App() {
                   onChange={(e) => {
                     const newType = e.target.value as "qr" | "barcode";
                     setPrintType(newType);
-                    generateUniqueBatch(labelSizeCm, newType);
+                    generateMultiPageBatch(labelSizeCm, newType, pageCount);
                   }}
                   style={{ padding: "4px 8px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "12px", colorScheme: "dark" }}
                 >
@@ -741,17 +773,32 @@ export default function App() {
                   onChange={(e) => {
                     const val = parseFloat(e.target.value);
                     setLabelSizeCm(val);
-                    generateUniqueBatch(val, printType);
+                    generateMultiPageBatch(val, printType, pageCount);
                   }}
-                  style={{ width: "120px", accentColor: "#58a6ff", cursor: "pointer" }}
+                  style={{ width: "100px", accentColor: "#58a6ff", cursor: "pointer" }}
                 />
-                <span style={{ fontSize: "12px", color: "#58a6ff", fontWeight: "600" }}>{calculateTotalFit(labelSizeCm, printType)} stk</span>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "11px", color: "#777", textTransform: "uppercase" }}>Antall ark:</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="20"
+                  value={pageCount}
+                  onChange={(e) => {
+                    const val = Math.max(1, parseInt(e.target.value) || 1);
+                    setPageCount(val);
+                    generateMultiPageBatch(labelSizeCm, printType, val);
+                  }}
+                  style={{ width: "50px", padding: "4px 6px", background: "#000", color: "#fff", border: "1px solid #333", outline: "none", fontSize: "12px" }}
+                />
               </div>
             </div>
 
             <div style={{ display: "flex", gap: "10px" }}>
               <button
-                onClick={() => window.print()}
+                onClick={() => setShowPrintReminder(true)}
                 style={{ padding: "8px 16px", background: "#238636", color: "#fff", border: "none", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}
               >
                 Skriv ut
@@ -765,62 +812,99 @@ export default function App() {
             </div>
           </div>
 
-          {/* HOVEDOMRÅDE: LIGGENDE (LANDSCAPE) A4-ARK VISUALISERING */}
-          <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", padding: "15px", overflow: "hidden" }}>
-            <div 
-              style={{
-                width: "297mm",
-                height: "210mm",
-                maxHeight: "calc(100vh - 90px)",
-                maxWidth: "calc(100vw - 30px)",
-                background: "#ffffff",
-                color: "#000000",
-                boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
-                padding: "5mm",
-                boxSizing: "border-box",
-                display: "flex",
-                flexWrap: "wrap",
-                alignContent: "flex-start",
-                gap: "1.5mm",
-                overflow: "hidden"
-              }}
-            >
-              {generatedBatch.map((id) => {
-                const itemWidth = printType === "barcode" ? `${labelSizeCm * 1.5}cm` : `${labelSizeCm}cm`;
-                const itemHeight = `${labelSizeCm}cm`;
+          {/* HOVEDOMRÅDE */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", padding: "20px", overflowY: "auto", gap: "20px" }}>
+            <div id="printable-container" style={{ display: "flex", flexDirection: "column", gap: "20px", alignItems: "center" }}>
+              {generatedPagesBatch.map((pageBatch, pageIndex) => (
+                <div 
+                  key={pageIndex}
+                  className="printable-page"
+                  style={{
+                    width: "297mm",
+                    height: "210mm",
+                    background: "#ffffff",
+                    color: "#000000",
+                    boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+                    padding: "5mm",
+                    boxSizing: "border-box",
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignContent: "flex-start",
+                    gap: "1.5mm",
+                    overflow: "hidden",
+                    flexShrink: 0,
+                    position: "relative"
+                  }}
+                >
+                  {pageBatch.map((id) => {
+                    const itemWidth = printType === "barcode" ? `${labelSizeCm * 1.5}cm` : `${labelSizeCm}cm`;
+                    const itemHeight = `${labelSizeCm}cm`;
 
-                return (
-                  <div 
-                    key={id} 
-                    style={{ 
-                      width: itemWidth,
-                      height: itemHeight,
-                      background: "#ffffff", 
-                      border: "1px dashed #ccc", 
-                      padding: "1mm", 
-                      boxSizing: "border-box",
-                      display: "flex", 
-                      flexDirection: "column", 
-                      justifyContent: "center",
-                      alignItems: "center",
-                      overflow: "hidden"
-                    }}
-                  >
-                    {printType === "barcode" ? (
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
-                        <Barcode value={id} width={Math.max(0.8, labelSizeCm * 0.4)} height={Math.min(50, labelSizeCm * 12)} fontSize={0} displayValue={false} />
+                    return (
+                      <div 
+                        key={id} 
+                        style={{ 
+                          width: itemWidth,
+                          height: itemHeight,
+                          background: "#ffffff", 
+                          border: "1px dashed #ccc", 
+                          padding: "1mm", 
+                          boxSizing: "border-box",
+                          display: "flex", 
+                          flexDirection: "column", 
+                          justifyContent: "center",
+                          alignItems: "center",
+                          overflow: "hidden"
+                        }}
+                      >
+                        {printType === "barcode" ? (
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
+                            <Barcode value={id} width={Math.max(0.8, labelSizeCm * 0.4)} height={Math.min(50, labelSizeCm * 12)} fontSize={0} displayValue={false} />
+                          </div>
+                        ) : (
+                          <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }}>
+                            <QRCodeSVG value={id} style={{ width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%" }} level="M" />
+                          </div>
+                        )}
                       </div>
-                    ) : (
-                      <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }}>
-                        <QRCodeSVG value={id} style={{ width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%" }} level="M" />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           </div>
 
+        </div>
+      )}
+
+      {/* PÅMINNELSES-POPUP FØR UTSKRIFT */}
+      {showPrintReminder && (
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.85)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 200 }}>
+          <div style={{ background: "#0f0f0f", padding: "28px", border: "1px solid #333", width: "400px", borderRadius: "4px", textAlign: "center" }}>
+            <h3 style={{ margin: "0 0 12px 0", fontSize: "16px", fontWeight: "600", color: "#fff", textTransform: "uppercase" }}>
+              Husk før du skriver ut!
+            </h3>
+            <p style={{ margin: "0 0 20px 0", fontSize: "13px", color: "#aaa", lineHeight: "1.5" }}>
+              Når utskriftsvinduet åpner seg, sjekk at papirretningen er satt til <strong style={{ color: "#fff" }}>Liggende</strong> (og at ensidig utskrift er valgt) slik at arket blir riktig!
+            </p>
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button
+                onClick={() => {
+                  setShowPrintReminder(false);
+                  window.print();
+                }}
+                style={{ flex: 1, padding: "10px", background: "#238636", color: "#fff", border: "none", fontWeight: "600", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}
+              >
+                Gå til utskrift
+              </button>
+              <button
+                onClick={() => setShowPrintReminder(false)}
+                style={{ flex: 1, padding: "10px", background: "transparent", color: "#aaa", border: "1px solid #333", cursor: "pointer", fontSize: "12px", textTransform: "uppercase" }}
+              >
+                Avbryt
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
